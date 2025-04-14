@@ -85,4 +85,50 @@ const createProduct = (req, res) => {
   });
 };
 
-module.exports = { getAllProducts, createProduct, upload };
+const updateProduct = (req, res) => {
+  const { id } = req.params;
+  const { name, price, stock, category } = req.body;
+  
+  // First, get the current product to check if it has an image
+  ProductModel.getById(id, (err, product) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+    
+    // If a new image is uploaded, use that. Otherwise keep the existing image.
+    const img = req.file ? `/images/${req.file.filename}` : product.img;
+    
+    ProductModel.update(id, name, price, stock, img, category, (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      // Return the full image URL in the response
+      const imgUrl = img ? `${req.protocol}://${req.get('host')}${img}` : null;
+      
+      res.json({
+        message: "Product updated",
+        id,
+        name,
+        price,
+        stock,
+        img,
+        imgUrl,
+        category,
+        updated_at: new Date()
+      });
+    });
+  });
+};
+
+const deleteProduct = (req, res) => {
+  const { id } = req.params;
+  
+  ProductModel.delete(id, (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    res.json({ message: "Product deleted", id });
+  });
+};
+
+module.exports = { getAllProducts, createProduct, upload, updateProduct, deleteProduct };
