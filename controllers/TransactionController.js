@@ -10,11 +10,86 @@ const TransactionController = {
             if (!customer || !customer.name || !cart || Object.keys(cart).length === 0) {
                 return res.status(400).json({ error: 'Missing required fields' });
             }
+            
+            // Function to process product IDs and create transaction
+            const processCartAndCreateTransaction = () => {
+                // Check if cart already has productId for each item
+                const productNames = Object.keys(cart);
+                if (productNames.length === 0) {
+                    return res.status(400).json({ error: 'Cart is empty' });
+                }
+                
+                // If we already have product_id for each item, proceed directly
+                const missingProductId = productNames.some(name => 
+                    !cart[name].product_id && !cart[name].productId);
+                
+                if (!missingProductId) {
+                    // Ensure consistent property naming (product_id)
+                    for (const productName of productNames) {
+                        if (cart[productName].productId && !cart[productName].product_id) {
+                            cart[productName].product_id = cart[productName].productId;
+                        }
+                    }
+                    
+                    const transaction = {
+                        customer,
+                        cart,
+                        note,
+                        total
+                    };
+                    
+                    TransactionModel.create(transaction, (err, result) => {
+                        if (err) {
+                            return res.status(500).json({ error: err.message });
+                        }
+                        
+                        res.status(201).json({
+                            message: 'Transaction created successfully',
+                            transactionId: result.id,
+                            tableNumber: customer.table
+                        });
+                    });
+                    return;
+                }
+                
+                // If we need to map product names to IDs
+                ProductModel.getAll((err, products) => {
+                    if (err) return res.status(500).json({ error: err.message });
+                    
+                    for (const productName of productNames) {
+                        const product = products.find(p => p.name === productName);
+                        if (!product) {
+                            return res.status(400).json({ error: `Product '${productName}' not found` });
+                        }
+                        
+                        cart[productName].product_id = product.id;
+                    }
+                    
+                    const transaction = {
+                        customer,
+                        cart,
+                        note,
+                        total
+                    };
+                    
+                    TransactionModel.create(transaction, (err, result) => {
+                        if (err) {
+                            return res.status(500).json({ error: err.message });
+                        }
+                        
+                        res.status(201).json({
+                            message: 'Transaction created successfully',
+                            transactionId: result.id,
+                            tableNumber: customer.table
+                        });
+                    });
+                });
+            };
     
             // Step 1: Generate table number if not provided
             if (!customer.table || customer.table.trim() === "") {
                 // Fetch last transaction today
-                TransactionModel.getLastTransactionToday(async (err, lastTrans) => {
+                TransactionModel.getLastTransactionToday((err, lastTrans) => {
                     if (err) {
                         return res.status(500).json({ error: err.message });
                     }
@@ -29,77 +104,20 @@ const TransactionController = {
                     }
     
                     customer.table = newTableNumber;
-    
-                    // Continue with product name -> ID mapping
-                    const productNames = Object.keys(cart);
-                    if (productNames.length === 0) {
-                        return res.status(400).json({ error: 'Cart is empty' });
-                    }
-    
-                    const enhancedCart = { ...cart };
-    
-                    ProductModel.getAll((err, products) => {
-                        if (err) return res.status(500).json({ error: err.message });
-    
-                        for (const productName of productNames) {
-                            const product = products.find(p => p.name === productName);
-                            if (!product) {
-                                return res.status(400).json({ error: `Product '${productName}' not found` });
-                            }
-    
-                            enhancedCart[productName].productId = product.id;
-                        }
-    
-                        const transaction = {
-                            customer,
-                            cart: enhancedCart,
-                            note,
-                            total
-                        };
-    
-                        TransactionModel.create(transaction, (err, result) => {
-                            if (err) {
-                                return res.status(500).json({ error: err.message });
-                            }
-    
-                            res.status(201).json({
-                                message: 'Transaction created successfully',
-                                transactionId: result.id,
-                                tableNumber: customer.table
-                            });
-                        });
-                    });
+                    
+                    // Process cart and create transaction
+                    processCartAndCreateTransaction();
                 });
-    
             } else {
-                // Jika table number sudah diberikan, langsung lanjut
-                // ... (bisa salin logic product mapping & create transaction dari atas ke sini)
-                const transaction = {
-                    customer,
-                    cart,
-                    note,
-                    total
-                };
-    
-                TransactionModel.create(transaction, (err, result) => {
-                    if (err) {
-                        return res.status(500).json({ error: err.message });
-                    }
-    
-                    res.status(201).json({
-                        message: 'Transaction created successfully',
-                        transactionId: result.id,
-                        tableNumber: customer.table
-                    });
-                })
+                // If table number is already provided, proceed with product mapping
+                processCartAndCreateTransaction();
             }
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
     },
     
-    
-    // Get all transactions
+    // Rest of the controller remains the same
     getAllTransactions: (req, res) => {
         TransactionModel.getAll((err, transactions) => {
             if (err) {
@@ -110,7 +128,6 @@ const TransactionController = {
         });
     },
     
-    // Get transaction by ID - ADMIN access
     getTransactionById: (req, res) => {
         const { id } = req.params;
         
@@ -127,7 +144,6 @@ const TransactionController = {
         });
     },
     
-    // Get transaction by ID - PUBLIC access with limited info
     getPublicTransactionById: (req, res) => {
         const { id } = req.params;
         
@@ -155,7 +171,6 @@ const TransactionController = {
         });
     },
     
-    // Update transaction status with stock reduction when processing
     updateTransactionStatus: (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
@@ -231,7 +246,6 @@ const TransactionController = {
 // Helper function to calculate estimated preparation time
 function calculateEstimatedTime(items) {
     // Basic calculation - 5 minutes base + 2 minutes per item
-    // This is just an example - you can customize based on your business logic
     const baseTime = 5;
     const perItemTime = 2;
     
