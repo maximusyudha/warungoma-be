@@ -5,61 +5,99 @@ const TransactionController = {
     // Create a new transaction
     createTransaction: async (req, res) => {
         try {
-            const { customer, cart, note, total } = req.body;
-            
-            // Validate required fields
-            if (!customer || !customer.name || !customer.table || !cart || Object.keys(cart).length === 0) {
+            let { customer, cart, note, total } = req.body;
+    
+            if (!customer || !customer.name || !cart || Object.keys(cart).length === 0) {
                 return res.status(400).json({ error: 'Missing required fields' });
             }
-            
-            // Get product IDs for each cart item
-            const productNames = Object.keys(cart);
-            if (productNames.length === 0) {
-                return res.status(400).json({ error: 'Cart is empty' });
-            }
-            
-            // Enhanced cart with product IDs
-            const enhancedCart = { ...cart };
-            
-            // Get all products to match IDs
-            ProductModel.getAll((err, products) => {
-                if (err) {
-                    return res.status(500).json({ error: err.message });
-                }
-                
-                // Map product names to their IDs
-                for (const productName of productNames) {
-                    const product = products.find(p => p.name === productName);
-                    if (!product) {
-                        return res.status(400).json({ error: `Product '${productName}' not found` });
+    
+            // Step 1: Generate table number if not provided
+            if (!customer.table || customer.table.trim() === "") {
+                // Fetch last transaction today
+                TransactionModel.getLastTransactionToday(async (err, lastTrans) => {
+                    if (err) {
+                        return res.status(500).json({ error: err.message });
                     }
-                    
-                    enhancedCart[productName].productId = product.id;
-                }
-                
-                // Create transaction with enhanced cart
+    
+                    let newTableNumber = 'M01';
+    
+                    if (lastTrans && lastTrans.customer && lastTrans.customer.table) {
+                        const lastTable = lastTrans.customer.table;
+                        const lastNum = parseInt(lastTable.replace('M', '')) || 0;
+                        const nextNum = lastNum + 1;
+                        newTableNumber = `M${nextNum.toString().padStart(2, '0')}`;
+                    }
+    
+                    customer.table = newTableNumber;
+    
+                    // Continue with product name -> ID mapping
+                    const productNames = Object.keys(cart);
+                    if (productNames.length === 0) {
+                        return res.status(400).json({ error: 'Cart is empty' });
+                    }
+    
+                    const enhancedCart = { ...cart };
+    
+                    ProductModel.getAll((err, products) => {
+                        if (err) return res.status(500).json({ error: err.message });
+    
+                        for (const productName of productNames) {
+                            const product = products.find(p => p.name === productName);
+                            if (!product) {
+                                return res.status(400).json({ error: `Product '${productName}' not found` });
+                            }
+    
+                            enhancedCart[productName].productId = product.id;
+                        }
+    
+                        const transaction = {
+                            customer,
+                            cart: enhancedCart,
+                            note,
+                            total
+                        };
+    
+                        TransactionModel.create(transaction, (err, result) => {
+                            if (err) {
+                                return res.status(500).json({ error: err.message });
+                            }
+    
+                            res.status(201).json({
+                                message: 'Transaction created successfully',
+                                transactionId: result.id,
+                                tableNumber: customer.table
+                            });
+                        });
+                    });
+                });
+    
+            } else {
+                // Jika table number sudah diberikan, langsung lanjut
+                // ... (bisa salin logic product mapping & create transaction dari atas ke sini)
                 const transaction = {
                     customer,
-                    cart: enhancedCart,
+                    cart,
                     note,
                     total
                 };
-                
+    
                 TransactionModel.create(transaction, (err, result) => {
                     if (err) {
                         return res.status(500).json({ error: err.message });
                     }
-                    
+    
                     res.status(201).json({
                         message: 'Transaction created successfully',
-                        transactionId: result.id
+                        transactionId: result.id,
+                        tableNumber: customer.table
                     });
-                });
-            });
+                })
+            }
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
     },
+    
     
     // Get all transactions
     getAllTransactions: (req, res) => {
@@ -117,7 +155,7 @@ const TransactionController = {
         });
     },
     
-    // Update transaction status
+    // Update transaction status with stock reduction when processing
     updateTransactionStatus: (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
@@ -130,21 +168,63 @@ const TransactionController = {
             });
         }
         
-        TransactionModel.updateStatus(id, status, (err, result) => {
+        // First, get the current transaction to check its status
+        TransactionModel.getById(id, (err, transaction) => {
             if (err) {
                 return res.status(500).json({ error: err.message });
             }
             
-            if (result.affectedRows === 0) {
+            if (!transaction) {
                 return res.status(404).json({ error: 'Transaction not found' });
             }
             
-            res.json({
-                message: 'Transaction status updated',
-                id,
-                status
-            });
+            // If updating to processing and current status is not already processing
+            if (status === 'processing' && transaction.status !== 'processing') {
+                // Reduce stock for each item in the transaction
+                reduceStockForTransaction(transaction, (stockErr) => {
+                    if (stockErr) {
+                        return res.status(500).json({ error: stockErr.message });
+                    }
+                    
+                    // Now update the transaction status
+                    updateStatus();
+                });
+            } 
+            // If cancelling a processing order, restore stock
+            else if (status === 'cancelled' && transaction.status === 'processing') {
+                // Restore stock for each item in the transaction
+                restoreStockForTransaction(transaction, (stockErr) => {
+                    if (stockErr) {
+                        return res.status(500).json({ error: stockErr.message });
+                    }
+                    
+                    // Now update the transaction status
+                    updateStatus();
+                });
+            }
+            else {
+                // For other status changes, just update the status
+                updateStatus();
+            }
         });
+        
+        function updateStatus() {
+            TransactionModel.updateStatus(id, status, (err, result) => {
+                if (err) {
+                    return res.status(500).json({ error: err.message });
+                }
+                
+                if (result.affectedRows === 0) {
+                    return res.status(404).json({ error: 'Transaction not found' });
+                }
+                
+                res.json({
+                    message: 'Transaction status updated',
+                    id,
+                    status
+                });
+            });
+        }
     }
 };
 
@@ -159,6 +239,106 @@ function calculateEstimatedTime(items) {
     const totalQuantity = items.reduce((total, item) => total + item.quantity, 0);
     
     return baseTime + (perItemTime * totalQuantity);
+}
+
+// Helper function to reduce stock when a transaction is processed
+function reduceStockForTransaction(transaction, callback) {
+    try {
+        // Check if transaction has items
+        if (!transaction.items || transaction.items.length === 0) {
+            return callback(new Error('Transaction has no items'));
+        }
+        
+        // Prepare batch updates
+        const stockUpdates = [];
+        
+        transaction.items.forEach(item => {
+            stockUpdates.push({
+                productId: item.product_id,
+                quantity: item.quantity
+            });
+        });
+        
+        // Process stock reduction for all items
+        let completed = 0;
+        let hasError = false;
+        
+        stockUpdates.forEach(update => {
+            ProductModel.reduceStock(update.productId, update.quantity, (err) => {
+                if (hasError) return; // Skip if already has error
+                
+                if (err) {
+                    hasError = true;
+                    return callback(err);
+                }
+                
+                completed++;
+                
+                // All updates completed successfully
+                if (completed === stockUpdates.length) {
+                    callback(null);
+                }
+            });
+        });
+        
+        // Handle empty updates array case
+        if (stockUpdates.length === 0) {
+            callback(null);
+        }
+        
+    } catch (error) {
+        callback(error);
+    }
+}
+
+// Helper function to restore stock when a processing transaction is cancelled
+function restoreStockForTransaction(transaction, callback) {
+    try {
+        // Check if transaction has items
+        if (!transaction.items || transaction.items.length === 0) {
+            return callback(new Error('Transaction has no items'));
+        }
+        
+        // Prepare batch updates
+        const stockUpdates = [];
+        
+        transaction.items.forEach(item => {
+            stockUpdates.push({
+                productId: item.product_id,
+                quantity: item.quantity
+            });
+        });
+        
+        // Process stock restoration for all items
+        let completed = 0;
+        let hasError = false;
+        
+        stockUpdates.forEach(update => {
+            ProductModel.restoreStock(update.productId, update.quantity, (err) => {
+                if (hasError) return; // Skip if already has error
+                
+                if (err) {
+                    hasError = true;
+                    return callback(err);
+                }
+                
+                completed++;
+                
+                // All updates completed successfully
+                if (completed === stockUpdates.length) {
+                    callback(null);
+                }
+            });
+        });
+        
+        // Handle empty updates array case
+        if (stockUpdates.length === 0) {
+            callback(null);
+        }
+        
+    } catch (error) {
+        callback(error);
+    }
 }
 
 module.exports = TransactionController;

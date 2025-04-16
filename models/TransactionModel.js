@@ -85,6 +85,20 @@ const TransactionModel = {
             );
         });
     },
+
+    // Dalam TransactionModel.js
+    getLastTransactionToday: (callback) => {
+        const today = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
+        const query = `
+            SELECT * FROM transactions 
+            WHERE DATE(created_at) = ? 
+            ORDER BY created_at DESC LIMIT 1
+        `;
+        db.query(query, [today], (err, results) => {
+            if (err) return callback(err);
+            callback(null, results[0]);
+        });
+    },
     
     // Update transaction status
     updateStatus: (id, status, callback) => {
@@ -93,6 +107,69 @@ const TransactionModel = {
             [status, id],
             callback
         );
+    },
+
+    // Add these methods to your ProductModel
+
+    /**
+     * Reduce stock for a product
+     * @param {number} productId - The product ID
+     * @param {number} quantity - The quantity to reduce
+     * @param {function} callback - Callback function(err, result)
+     */
+    reduceStock: function(productId, quantity, callback) {
+        // First get the current stock
+        const query = 'SELECT stock FROM products WHERE id = ?';
+        
+        db.query(query, [productId], (err, results) => {
+            if (err) {
+                return callback(err);
+            }
+            
+            if (results.length === 0) {
+                return callback(new Error(`Product with ID ${productId} not found`));
+            }
+            
+            const currentStock = results[0].stock;
+            
+            // Check if we have enough stock
+            if (currentStock < quantity) {
+                return callback(new Error(`Not enough stock for product ID ${productId}. Available: ${currentStock}, Requested: ${quantity}`));
+            }
+            
+            // Update the stock
+            const updateQuery = 'UPDATE products SET stock = stock - ? WHERE id = ?';
+            
+            db.query(updateQuery, [quantity, productId], (updateErr, updateResult) => {
+                if (updateErr) {
+                    return callback(updateErr);
+                }
+                
+                callback(null, updateResult);
+            });
+        });
+    },
+
+    /**
+     * Restore stock for a product (when cancelling an order)
+     * @param {number} productId - The product ID
+     * @param {number} quantity - The quantity to restore
+     * @param {function} callback - Callback function(err, result)
+     */
+    restoreStock: function(productId, quantity, callback) {
+        const query = 'UPDATE products SET stock = stock + ? WHERE id = ?';
+        
+        db.query(query, [quantity, productId], (err, result) => {
+            if (err) {
+                return callback(err);
+            }
+            
+            if (result.affectedRows === 0) {
+                return callback(new Error(`Product with ID ${productId} not found`));
+            }
+            
+            callback(null, result);
+        });
     }
 };
 
